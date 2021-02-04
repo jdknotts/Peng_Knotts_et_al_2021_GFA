@@ -1,0 +1,994 @@
+---
+title: "GFA_BPCNNI"
+authors: "Henry Yeh, JD Knotts, Yujia Peng"
+date: "December 2020"
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+---
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r,setup, echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, results='hide',include=false}
+
+#install and load packages
+packages2use <- c('stringr','readxl','GFA','corrplot','ggplot2','dplyr')
+installedPs <- installed.packages() #get list of installed packages
+loadedPs <- (.packages()) #get list of loaded packages
+for (PACKAGE in 1:length(packages2use)) {
+  if (!any(installedPs[,1] == packages2use[PACKAGE])) { #if package isn't already installed...
+    eval(parse(text=paste0('install.packages(',packages2use[PACKAGE],')'))) #install it
+  }
+  if (!any(loadedPs == packages2use[PACKAGE])) { #if package isn't already loaded...
+    eval(parse(text=paste0('library(',packages2use[PACKAGE],')'))) #load it
+  }
+}
+
+#set path to GFA folder 
+setNewPath <- FALSE #default=TRUE
+if (setNewPath) {
+  gfaDir <- readline(prompt="Enter path to folder downloaded from github (for example: ~/myDirectory/GFA_peng_knotts_et_al/): ")
+} else {
+  gfaDir <- 'ENTER FOLDER PATH HERE'
+  gfaDir <- '~/Documents/Craske_Lab/RDoC/manuscript_1/biol_psych_submission/revisions/BPCNNI/GFA_peng_knotts_et_al/'
+}
+if (!substr(gfaDir,nchar(gfaDir),nchar(gfaDir)) == '/') { #if the inputted path doesn't end in a slash...
+  gfaDir <- paste0(gfaDir,'/') #add one
+}
+
+#load supplementary functions
+source(paste0(gfaDir,'rGFA_functions_BPCNNI.R'))
+
+#Set GFA input and output folder paths
+inputDir <- paste0(gfaDir,'input_data/');
+outputDir <- paste0(gfaDir,'output_data/');
+
+#Get input data
+inputFiles <- list.files(inputDir,pattern = ".xlsx")
+numberedFiles <- inputFiles
+for (FILE in 1:length(numberedFiles)) {
+  numberedFiles[FILE] <- paste0(FILE,') ',numberedFiles[FILE])
+}
+cat(paste(numberedFiles, collapse='\n' ) )
+fileNum <- as.numeric(readline(prompt="Enter desired file number from list above: "))
+inputFileName <- inputFiles[fileNum]
+
+#load input data
+rawDataDummy <- as.data.frame(read_excel(paste0(inputDir,inputFileName)))
+rawDataDummy2 <- as.data.frame(read_excel(paste0(inputDir,inputFiles[fileNum]),skip = 1)) #import .xlsx file without the variable name  row (this will set the block assignment rows as the column names, which we will replace on the next line with the variable names from rawDataDummy)
+
+#make sure raw data is numeric
+rawData <- as.data.frame(matrix(nrow = dim(rawDataDummy2)[1], ncol = dim(rawDataDummy2)[2]))
+for (ROW in 1:dim(rawDataDummy2)[1]) {
+  for (COL in 1:dim(rawDataDummy2)[2]) {
+    rawData[ROW,COL] = as.numeric(rawDataDummy2[ROW,COL])
+  }
+}
+
+#assign variable names as rawData column names
+colnames(rawData) <- colnames(rawDataDummy) 
+
+#get variable names (ignoring sample ID)
+varnames <- colnames(rawData)[2:dim(rawData)[2]] 
+
+#get block assignments
+blockVec <- as.character(rawDataDummy[1,2:dim(rawDataDummy)[2]]) #block names or numbers should always be in the first row of the input data file
+blockNames <- unique(blockVec) #get block names
+varsPerBlock <- c() #initialize vector that will contain the number of variables in each block
+for (BLOCK in 1:length(blockNames)) { #for each block...
+  varsPerBlock[BLOCK] <- length(which(blockVec == blockNames[BLOCK])) #get number of variables in that block
+}
+rm(rawDataDummy) #remove rawDataDummy
+
+#select whether to save (TRUE) or not save (FALSE) gfa data
+saveData = TRUE
+
+#Select whether to use only complete cases (TRUE) or use GFA imputation (FALSE)
+completeOnly <- TRUE; 
+
+#remove rows where ALL data is missing
+toRemove <- c()
+for (ROW in 1:(dim(rawData)[1])) {
+  if (length(which(is.na(rawData[ROW,2:dim(rawData)[2]]))) == dim(rawData)[2]-1) { #if the number of NA values in a given row is equal to the total number of columns...
+    toRemove <- c(toRemove,ROW) #flag it as a row to be removed
+  }
+}
+if (length(toRemove) > 0) { #if there are any rows to remove...
+  rawData <- rawData[-toRemove,] #remove them
+}
+
+#get data without IDs
+inputData <- rawData[,2:dim(rawData)[2]]
+
+#get version of dataset with only samples that have complete data
+if (completeOnly) {
+  inputData <- inputData[complete.cases(inputData),]
+  inputDataIDs <- rawData[complete.cases(rawData),1]
+}
+
+#subset data by block
+MY <- vector(mode='list',length(blockNames)) #initalize a list of length = # blocks
+colStart <- 1 #start at column 1 in the first block
+for (BLOCK in 1:length(blockNames)) { #for each block...
+  cols <- c(colStart:(colStart + varsPerBlock[BLOCK] - 1)) #get columns of dataSet that correspond to current block
+  MY[[BLOCK]] <- as.matrix(inputData[,cols]) #get data from current block
+  colStart <- colStart + varsPerBlock[BLOCK] #get starting column of next block
+}
+
+#normalize data
+mynorm <- normalizeData(MY, type="scaleFeatures")
+```
+
+Get/plot correlation matrix for input variables
+```{r correlation matrix, echo=TRUE, fig.height=8, fig.width=8}
+corM <- cor(inputData, method='spearman', use='pair')
+corP <- cor.mtest(inputData, conf.level = 0.95)
+inputVarCorrPlot <- TRUE
+if (inputVarCorrPlot) {
+  corrplot::corrplot(corM, p.mat = corP$p, insig = "label_sig", sig.level = c(.001, .01, .05), pch.cex = .7, pch.col = "black", type = "upper", method='circle', tl.cex = .9)
+}
+```
+
+
+```{r GFA default options, echo=FALSE, include=TRUE}
+
+#get GFA default options
+opts <- getDefaultOpts()
+opts$convergenceCheck <- TRUE #add convergence check
+opts$vrbose <- 0
+
+# number of data for posterior vector:
+opts$iter.saved = 100
+startK <- dim(inputData)[2]
+```
+
+Run the GFA
+```{r GFA iterations, echo=FALSE, include=TRUE}
+
+#seed the RNG
+set.seed(123);
+
+#select number of iterations
+totalruns <- 10
+
+#initialize list for GFA output and loop through iterations
+res <- list()
+for(i in 1:totalruns){
+  
+  #indicate which iteration we're on
+  print(i)
+  
+  #run the GFA
+  res[[i]] <- gfa(mynorm$train, K=startK, opts=opts)
+  
+  #Plot heatmaps (optional)
+  plotIterativeHeatmaps = TRUE
+  if (plotIterativeHeatmaps) {
+    vis <- visualizeComponents(res[[i]], Y = NULL, hclust = FALSE, topK = 0)
+  }
+}
+```
+
+```{r, get robust components, echo=FALSE, include=TRUE}
+
+#get convergence data
+R <- 10
+rep.summ <- data.frame(Replicate=1:R, conv=rep(NA, R), K=rep(NA, R))
+xw <- list()
+gfaList_full <- list()
+for(r in 1:R){
+  xw[[r]] <- pmXW_by_factor(res[[r]])
+  gfaList_full[[r]] <- res[[r]]
+  rep.summ$conv[r] <- res[[r]]$conv
+  rep.summ$K[r] <- res[[r]]$K
+}
+
+#check convergence
+if (opts$convergenceCheck) {
+  rep.use <- sort(rep.summ$conv, index.return=T)
+  rep.use$ix[1:10]
+  xw <- xw[rep.use$ix[1:10]]
+}
+
+corGrids <- matchGrids <- c(seq(0.1, 0.5, by=0.2), seq(0.6, 0.9, 0.1))
+tmp <- matrix(rep(NA, length(corGrids)*length(matchGrids)), 
+              nrow = length(corGrids), ncol = length(matchGrids),
+              dimnames = list(corThr=corGrids, matchThr=matchGrids))
+
+match_orig <- list(K.grids = tmp, mse.m = tmp, indices = rep( list(list()), length(corGrids) ))
+
+#normalize subject data
+mynorm <- normalizeData(train=MY, type="scaleFeatures")
+Y <- do.call(cbind, mynorm$train)
+
+rcomp <- list()
+for(i in 1:length(corGrids)){
+  rcomp[[i]] <- list()
+  for (j in 1:length(matchGrids)){
+    rcomp[[i]][[j]] <- robustComponents(gfaList_full, corThr=corGrids[i], matchThr=matchGrids[j])
+    match_orig$K.grids[i,j] <- rcomp[[i]][[j]]$Krobust
+    match_orig$indices[[i]][[j]] <- rcomp[[i]][[j]]$indices
+    if(rcomp[[i]][[j]]$Krobust>0){
+      yhat <- apply(rcomp[[i]][[j]]$effect, 1:2, sum, na.rm=T)
+      match_orig$mse.m[i,j] <- mean((yhat - Y)^2)
+    }
+  }
+}
+
+### Summary of the grid search for thresholding parameter combinations:
+match_orig$K.grids
+roundedMSE <- round(match_orig$mse.m, 3)
+minMSEinds <- which(roundedMSE == min(roundedMSE), arr.ind = TRUE)
+if (dim(minMSEinds)[1] > 1) {
+  minMSEinds <- minMSEinds[1,]
+}
+paste0("The min. MSE = ", round(min(match_orig$mse.m), 3))
+#rcomp[[i]][[j]]$indices
+
+### 1.3.2. Using a list of posterior means of reconstructed data
+system.time(
+  match.mse <- MSE.Grids(
+    Ymtx=Y,                       ## the observed (normalized) data matrix (N x D)
+    maxK = max(rep.summ$K),       ## the maximal K among the GFA replicates
+    comps=xw,                     ## a list of GFA replicates with posterior medians
+    corGrids=corGrids,            ## the grids of corThr values to be assessed
+    matchGrids=matchGrids)        ## the grids of matchThr values to be assessed
+)
+
+#Numbers of matched factors for each (corThr, matchThr) combination:
+match.mse$K.grid
+
+#Get optimal K based on mse minimization and the 1-SE rule
+opt.par <- optimizeK(K.grids=match.mse$K.grid, mse.array=match.mse$mse$all)
+round(opt.par$mse.m, 3)
+
+paste0("The min. MSE = ", round(opt.par$mse.min, 3))
+paste0("The 1-SE MSE threshold = ", round(opt.par$mseThr, 3))
+paste0("min. MSE criterion gives ", opt.par$Krobust.min, " matched factors")
+paste0("1-SE MSE criterion gives ", opt.par$Krobust.1se, " matched factors")
+# opt.par_full$par.min
+tmp <- match.mse$K.grids
+tmp[opt.par$mse.m > opt.par$mseThr | tmp != opt.par$Krobust.1se] <- NA #set all combos with mse > threshold or with 1-SE not equal to the optimal 1se value... to NA
+tmp
+
+### 1.4.1 Robust factors identified using a list of posterior samples
+credLevel = 0.95 #originally 0.95
+gfaList_p50 <- list()
+for (r in 1:R){ 
+  print( system.time(gfaList_p50[[r]] <- psSummary(gfa.res=gfaList_full[[r]], credible.lv=credLevel)) )
+}
+
+#get variable IDs by block
+varIdx.by.block <- list();
+counter <- 1;
+for (BLOCK in 1:length(blockNames)) {
+  numVars <- dim(MY[[BLOCK]])
+  numVars <- numVars[2];
+  varIdx.by.block[[BLOCK]] <- c(counter:(counter+numVars-1));
+  counter <- counter + numVars;
+}
+
+```
+
+Minimize between-factors correlation 
+```{r minimize between-factors correlation, echo=FALSE, warning=FALSE}
+
+#get number of conditions
+numConds <- length(corGrids)^2
+
+#sort by MSE
+mse.m <- opt.par$mse.m
+mse_sorted <- sort(mse.m,index.return = TRUE)
+
+#initialize stuff
+corrData <- NULL
+corrData$corrMat <- vector(mode = "list", length = length(corGrids))
+corrData$maxCrossCorr <- as.data.frame(matrix(nrow = length(corGrids), ncol = length(corGrids)))
+
+#make final data matrix
+labels <- c('cThresh','mThresh','Krobust_start','Krobust','MSE','MSE_rank','maxCorr','maxCorr_rank','rankSum','total_ve','ccThresh','ccPass','zeroRemoved','ccRemoved','final_factors')
+mccData <- as.data.frame(matrix(nrow = numConds, ncol = length(labels)))
+colnames(mccData) <- labels
+fflist <- vector(mode = "list", length = length(corGrids)^2)
+
+#in order of increasing MSE...
+ROW = 1;
+for (C in 1:length(corGrids)) { #for each correlation threshold...
+  
+  #make M list within C list
+  corrData$corrMat[[C]] <- vector(mode = "list", length = length(corGrids)) #for each matching threshold...
+  
+  for (M in 1:length(corGrids)) {
+    
+    #cThresh and mThresh
+    mccData[ROW,1] <- corGrids[C]
+    mccData[ROW,2] <- corGrids[M]
+    
+    #robust indices
+    robInd <- list(indices=match_orig$indices[[C]][[M]])
+    
+    keepLookin = 1
+    whileIteration = 1
+    toRemove_cc_str = c()
+    while (keepLookin == 1) {
+    
+      #variance explained
+      if (!dim(robInd$indices)[2] == 1) { #if we have more than one factor...
+        if (whileIteration == 1) {
+          
+          #get variance explained
+          ve <- rob.var.exp(models=gfaList_p50, indices=robInd, block.names=blockNames, varIdx.by.block=varIdx.by.block, use.unmatched=T, by.block=T)
+          dev.off() #suppress the VE plots that come out of the function above here
+        
+          #compute factor scores
+          rWX <- rob_wx(models=gfaList_p50, indices=ve$indices, block.labs=rep('NA',length(varnames)), var.labs=varnames) #note that block labels don't matter here so just setting them to NA to save
+          
+          #get starting number of robust factors
+          mccData$Krobust_start[ROW] = dim(rWX$x.rob)[2]
+          colnames_start = colnames(rWX$x.rob)
+        
+          #remove factors if they have all zero loadings
+          K_to_remove <- c()
+          for (K in 1:dim(rWX$w.med.all)[2]) {
+            if (length(which(rWX$w.med.all[,K]==0)) == dim(rWX$w.med.all)[1]) {
+              K_to_remove <- c(K_to_remove,K)
+            }
+          }
+          
+          #remove null factor if applicable
+          if (length(K_to_remove) >= 1) {
+            rWX$w.med <- rWX$w.med[,-K_to_remove]
+            rWX$w.med.all <- rWX$w.med.all[,-K_to_remove]
+            rWX$x.rob <- rWX$x.rob[,-K_to_remove]
+            ve_mean_dummy <- ve$ve.summ$Mean[-K_to_remove]
+          } else {
+            ve_mean_dummy <- ve$ve.summ$Mean
+          }
+          mccData$total_ve[ROW] <- sum(ve_mean_dummy)
+          mccData$zeroRemoved[ROW] = toString(K_to_remove)
+        }
+        
+        #index number of robust factors to mccData
+        mccData$Krobust[ROW] <- dim(rWX$x.rob)[2]
+        
+        #make correlation matrix
+        corrData$corrMat[[C]][[M]] <- cor(rWX$x.rob, method='spearman', use='pair')
+        absCorrMat <- abs(corrData$corrMat[[C]][[M]]) #get absolute value of correlation matrix
+        maxAbsCorr <- max(absCorrMat[which(absCorrMat < 1)]) #find highest correlation value
+        maxInds = sort(which(absCorrMat == maxAbsCorr, arr.ind=TRUE)[,1]) #get pair of factors showing the highest correlation
+        corrData$maxCrossCorr[C,M] <- corrData$corrMat[[C]][[M]][maxInds[1],maxInds[2]] #index max correlation value to corrData object 
+
+        mccData$maxCorr[ROW] <- corrData$maxCrossCorr[C,M]
+        mccData$MSE[ROW] <- mse.m[C,M] #add mean squared error to mccData
+        
+      } else { #if we only have one factor...
+        
+        #get variance explained
+        ve <- rob.var.exp(models=gfaList_p50, indices=robInd, block.names=blockNames, varIdx.by.block=varIdx.by.block, use.unmatched=T, by.block=T)
+        dev.off() #suppress the VE plots that come out of the function above here
+        mccData$total_ve[ROW] <- sum(ve$ve.summ$Mean)
+        
+        #compute factor scores
+        rWX <- rob_wx(models=gfaList_p50, indices=ve$indices, block.labs=rep('NA',length(varnames)), var.labs=varnames) #note that block labels don't matter here so just setting them to NA to save
+        
+        #extract some additional data from rWX
+        colnames_start = colnames(rWX$x.rob)
+        mccData$Krobust[ROW] <- 1 
+        
+        #add mean squared error to mccData
+        mccData$MSE[ROW] <- mse.m[C,M] 
+        
+        #consider this passing so code below doesn't break
+        mccData$ccPass <- 1 
+        
+        #break out of while loop for getting under the minimum correlation expected by chance
+        break 
+      }
+      
+      ### see which combinations of cThresh and mThresh give a set of factors that is under the minimum acceptable amount of cross correlation ###
+      n = length(inputDataIDs) #number of participants
+      k = mccData$Krobust[ROW] #number of factors
+      r=0.5 #starting cross correlation threshold (arbitrarily set to 0.5)
+      tmp = optim(par=.1,fn=optCorrThresh, n=n, k=k, method = "Brent", lower = 0, upper = 1) #arbitrarily start at 0.1
+      mccData$ccThresh[ROW] <- tmp$par
+      
+      #see if we made it under the minimum intercorrelation
+      if (abs(mccData$maxCorr[ROW]) <= mccData$ccThresh[ROW]) { #if so, yay, break out of while loop
+        mccData$ccPass[ROW] <- 1 #indicate that we passed under minimum intercorrelation 
+        break #break out of while loop for getting under the minimum correlation expected by chance
+      } else {
+        mccData$ccPass[ROW] <- 0 #indicate that we did not passed under minimum intercorrelation
+        
+        #get factor to remove
+        ccTot = rowSums(abs(corrData$corrMat[[C]][[M]][maxInds,]))
+        toRemove_cc = maxInds[which(ccTot == max(ccTot))]
+        toRemove_cc_str = c(toRemove_cc_str,toRemove_cc)
+        mccData$ccRemoved[ROW] = toString(toRemove_cc_str)
+        
+        #remove given factor from rWX object
+        rWX$w.med <- rWX$w.med[,-toRemove_cc]
+        rWX$w.med.all <- rWX$w.med.all[,-toRemove_cc]
+        rWX$x.rob <- rWX$x.rob[,-toRemove_cc]
+        
+        #remove given factor from variance explained array and recompute variance explained
+        ve_mean_dummy <- ve_mean_dummy[-toRemove_cc]
+        mccData$total_ve[ROW] <- sum(ve_mean_dummy)
+        
+        if (mccData$Krobust[ROW] <= 2) {
+          break
+        }
+      }
+      
+      whileIteration = whileIteration + 1
+    } #end of while loop for getting under the minimum correlation expected by chance
+    
+    if (exists('rWX')) { #if we made the rWX object above...
+      ffs <- c()
+      colnames_end = colnames(rWX$x.rob)
+      for (K in 1:length(colnames_end)) {
+        ffs <- c(ffs,which(colnames_start == colnames_end[K]))
+      }
+      
+    } else {
+      fNames <- colnames(robInd$indices)
+      ffs <- c()
+      for (NAME in 1:length(fNames)) {
+        ffs <- c(ffs,as.numeric(substr(fNames[NAME],2,nchar(fNames[NAME]))))
+      }
+    }
+    mccData$final_factors[ROW] <- toString(ffs)
+    fflist[[ROW]] <- ffs #make list of final factors
+    ROW <- ROW + 1
+  }
+}
+
+#sort by MSE
+dummy <- sort(mccData$MSE,index.return = TRUE)
+mccData$MSE_rank[dummy$ix] <- 1:numConds
+unq <- unique(dummy$x)
+for (i in 1:length(unq)) {
+  inds <- which(mccData$MSE == unq[i])
+  if (length(inds) > 1) {
+    mccData$MSE_rank[inds] <- min(mccData$MSE_rank[inds])
+  }
+}
+mseRankSorted <- sort(unique(mccData$MSE_rank))
+for (i in 1:length(mseRankSorted)) {
+  inds <- which(mccData$MSE_rank == mseRankSorted[i])
+  mccData$MSE_rank[inds] <- i
+}
+
+#sort by max cross correlation
+dummy <- sort(mccData$maxCorr,index.return = TRUE)
+mccData$maxCorr_rank[dummy$ix] <- 1:numConds
+unq <- unique(dummy$x)
+for (i in 1:length(unq)) {
+  inds <- which(mccData$maxCorr == unq[i])
+  if (length(inds) > 1) {
+    mccData$maxCorr_rank[inds] <- min(mccData$maxCorr_rank[inds])
+  }
+}
+mccRankSorted <- sort(unique(mccData$maxCorr_rank))
+for (i in 1:length(mccRankSorted)) {
+  inds <- which(mccData$maxCorr_rank == mccRankSorted[i])
+  mccData$maxCorr_rank[inds] <- i
+}
+
+#get rank sum
+mccData$rankSum <- mccData$MSE_rank + mccData$maxCorr_rank
+
+#get max k from the initial iterations
+maxK <- max(rep.summ$K)
+
+#find acceptable cThresh and mThresh pair that has less than or equal to maxK and the maximizes variance explained
+passingRows <- which(mccData$ccPass == 1 & mccData$Krobust <= maxK)
+rowToUse <- passingRows[which(mccData$total_ve[passingRows] == max(mccData$total_ve[passingRows]))]
+if (length(rowToUse)>1) {
+ rowToUse = rowToUse[which(mccData$MSE[rowToUse] == min(mccData$MSE[rowToUse]))]
+}
+if (length(rowToUse)>1) {
+  rowToUse = rowToUse[length(rowToUse)]
+}
+
+#update the opt.par object with minimal cross correlation (minCC) results
+opt.par$minCCinds[1] <- which(matchGrids == mccData$cThresh[rowToUse])
+opt.par$minCCinds[2] <- which(matchGrids == mccData$mThresh[rowToUse])
+opt.par$CCmax <- mccData$maxCorr[rowToUse]
+opt.par$Krobust.minCC <- mccData$Krobust[rowToUse]
+opt.par$minCC_cThresh_mThresh_K <- c(mccData$cThresh[rowToUse],mccData$mThresh[rowToUse],mccData$Krobust[rowToUse])
+
+```
+
+Plot correlation matrix between resulting robust factors
+```{r correlation between final robust factors, echo=FALSE, warning=FALSE}
+if (opt.par$Krobust.minCC > 1) { #if there is more than one robust factor
+  corrplot::corrplot(corrData$corrMat[[opt.par$minCCinds[1]]][[opt.par$minCCinds[2]]], method='circle', tl.cex = .9)
+}
+```
+
+Get/plot variance explained with all robust GFA factors before adjusting for weak loadings and between-factor correlation
+```{r plot variance explained across all factors, echo=FALSE, warning=FALSE}
+
+#Get optimal matching and correlation thresholds
+optInds <- opt.par$minCCinds #get indices for optimal thresholds
+rob.ind <- list(indices=match_orig$indices[[optInds[1]]][[optInds[2]]])
+
+#Get variance explained
+ve_full <- rob.var.exp(models=gfaList_p50, indices=rob.ind, block.names=blockNames, varIdx.by.block=varIdx.by.block, use.unmatched=T, by.block=T)
+tmp <- paste0(round(ve_full$ve.by.block$Mean, 1), ' +/- ', round(ve_full$ve.by.block$SE, 1))
+
+#get some block-by-block info for plotting
+block.labs <- NULL;
+blNames <- NULL;
+block4vars <- NULL;
+for (BLOCK in 1:length(blockNames)) {
+  blNames[BLOCK] <- paste0("Block_",BLOCK);
+  block.labs[BLOCK] <- c(tmp[BLOCK])
+  block4vars <- c(block4vars, rep(paste0("Block_",BLOCK),length(varIdx.by.block[[BLOCK]])))
+}
+names(block.labs) <- blNames;
+
+#plot variance explained by block
+p <- ggplot(ve_full$ve.by.block.comp, 
+            aes(x=Component, y=Mean, ymin=Mean-SE, ymax=Mean+SE, color=Block)) +
+  geom_pointrange() +
+  facet_wrap(~ Block) +
+  xlab('Robust factors') + 
+  ylab('Variance explained (%)') +
+  ggtitle("% variance explained by robust factors in each block")
+p
+```
+
+```{r filter model objects "rWX_", echo=FALSE, warning=FALSE}
+
+#get number of robust factors & number of repetitions
+Krobust <- ncol(ve_full$indices);
+n.reps <- length(gfaList_p50)
+
+#compute robust loadings and robust scores
+rWX_full <- rob_wx(models=gfaList_p50, indices=ve_full$indices, block.labs=block4vars, var.labs=varnames)
+
+#filter robust factors according to two approaches:
+#1) sparse: only include RFs with 1 or more loadings whose credible intervals do not contain zero 
+#2) all: all robust factors who have at least one nonzero loading
+RFs2keep <- vector(mode = "list", length = 2);
+RFs2Remove <- vector(mode = "list", length = 2);
+for (DT in 1:2) { #for each data type (1=sparse, 2=all)...
+  if (DT == 1) { #sparse
+    dummy <- rWX_full$w.med;
+  } else { #all
+    dummy <- rWX_full$w.med.all;
+  }
+  for (K in 1:Krobust) {
+    if (any(dummy[,K] != 0)) {
+      RFs2keep[[DT]]  <- c(RFs2keep[[DT]] ,K)
+    }
+  }
+}
+
+#if any factors explain zero variance, get rid of them
+toRemove4 = c()
+for (K in 1:Krobust) {
+  if (ve_full$ve.summ$Mean[K] == 0) {
+    toRemove4 = c(toRemove4,K)
+  }
+}
+if (exists("toRemove4")) {
+  for (DT in 1:2) { #for each data type (1=sparse, 2=all)...
+    if (!is.null(RFs2keep[[DT]])) {
+      for (K in 1:length(toRemove4)) {
+      if (!any(RFs2keep[[DT]] == toRemove4[K])) {
+        break
+      } else {
+        dummy <- which(RFs2keep[[DT]] == toRemove4[K])
+        RFs2keep[[DT]] <- RFs2keep[[DT]][-dummy]
+      }
+    }
+    RFs2Remove[[DT]] <- 1:Krobust
+    RFs2Remove[[DT]] <- RFs2Remove[[DT]][-RFs2keep[[DT]]]
+    }
+  }
+}
+
+#get variable names by block
+varNamesByBlock <- list()
+for (L in 1:length(varIdx.by.block)){
+  varNamesByBlock[[L]] <- varnames[varIdx.by.block[[L]]]
+}
+
+#adjust the rWX_full object per "sparse" or "all" data types
+numVars <- length(varnames);
+varsbyReps <- numVars * n.reps;
+toRemove = NULL#vector(mode = "list", length = 2)
+toRemove2 = NULL#vector(mode = "list", length = 2)
+for (DT in 1:2) { #for each data type (1=sparse, 2=all)...
+  
+  toRemove <- c();
+  toRemove2 <- c();
+  toRemove3 <- c();
+  if (DT == 1) {
+    data <- rWX_full$w.med
+  } else {
+    data <- rWX_full$w.med.all
+  }
+  
+  for (RF in 1:dim(data)[2]) {
+    if ((length(which(data[,RF]==0)) == dim(data)[1]) | (any(RFs2Remove[[DT]] == RF))) {
+      toRemove <- c(toRemove,RF);
+      toRemove2 <- c(toRemove2,which(rWX_full$w.ci$Component == RF))
+      toRemove3 <- c(toRemove3,which(rWX_full$w.ci.med$Component == RF))
+    }
+  }
+  toKeep_w.ci <- 1:dim(rWX_full$w.ci)[1]
+  if (!is.null(toRemove2)){
+    toKeep_w.ci <- toKeep_w.ci[-toRemove2]
+  }
+  toKeep_w.ci.med <- 1:dim(rWX_full$w.ci.med)[1]
+  if (!is.null(toRemove3)){
+    toKeep_w.ci.med <- toKeep_w.ci.med[-toRemove3]
+  }
+  
+  #remove necessary robust components
+  if (!is.null(toRemove)) {
+    data <- data[,-toRemove]
+  }
+  #set as data frame if only one robust component remains
+  if (is.null(dim(data))) {
+    data = as.data.frame(data);
+  }
+  
+  #if we have ZERO robust components at this point...
+  zeroRobComps <- c(0,0)
+  if (dim(data)[2] == 0) {
+    zeroRobComps[DT] <- 1
+    if (DT == 1) {
+      rWX_sparse = NULL
+    } else {
+      rWX_all = NULL
+    }
+  }
+  
+  if (zeroRobComps[DT] == 0) {
+    colnames(data) <- 1:dim(as.matrix(data))[2]
+  
+    if (DT == 1) {
+      rWX_sparse = {}
+      rWX_sparse$w.med = data
+      if (!is.null(toRemove)) {
+        rWX_sparse$x.rob = rWX_full$x.rob[,-toRemove]
+        ve_sparse = ve_full$ve.summ$Mean[-toRemove]
+        ve_sparse_SE = ve_full$ve.summ$SE[-toRemove]
+      } else {
+        rWX_sparse$x.rob = rWX_full$x.rob
+        ve_sparse = ve_full$ve.summ$Mean
+        ve_sparse_SE = ve_full$ve.summ$SE
+      }
+      rWX_sparse$ve_labels = NULL;
+      for (F in 1:length(ve_sparse)) {
+        rWX_sparse$ve_labels[F] <- paste0('*(',round(ve_sparse[F] * 100) / 100,'%) ',F)
+      }
+      rWX_sparse$w.ci = rWX_full$w.ci[toKeep_w.ci,]
+      rWX_sparse$w.ci.med = rWX_full$w.ci.med[toKeep_w.ci.med,]
+    } else {
+      rWX_all = {}
+      rWX_all$w.med = data
+      if (!is.null(toRemove)) {
+        rWX_all$x.rob = rWX_full$x.rob[,-toRemove]
+        ve_all = ve_full$ve.summ$Mean[-toRemove]
+        ve_all_SE = ve_full$ve.summ$SE[-toRemove]
+      } else {
+        rWX_all$x.rob = rWX_full$x.rob
+        ve_all = ve_full$ve.summ$Mean
+        ve_all_SE = ve_full$ve.summ$SE
+      }
+      rWX_all$ve_labels = NULL;
+      for (F in 1:length(ve_all)) {
+        if (any(RFs2keep[[1]] == F)) {
+          rWX_all$ve_labels[F] <- paste0('*(',round(ve_all[F] * 100) / 100,'%) ',F)
+        } else {
+          rWX_all$ve_labels[F] <- paste0('(',round(ve_all[F] * 100) / 100,'%) ',F)
+        }
+      }
+      rWX_all$w.ci = rWX_full$w.ci[toKeep_w.ci,]
+      rWX_all$w.ci.med = rWX_full$w.ci.med[toKeep_w.ci.med,]
+    }
+  }
+}
+
+#hack to prevent loadings with a median of zero from being included in circle plots
+if (!is.null(rWX_sparse)) {
+  rWX_sparse_circ <- rWX_sparse
+  for (ROW in 1:dim(rWX_sparse_circ$w.ci.med)[1]){
+    if (rWX_sparse_circ$w.ci.med[ROW,7] == 0) {
+      rWX_sparse_circ$w.ci.med[ROW,6] = 0
+      rWX_sparse_circ$w.ci.med[ROW,8] = 0
+    }
+  }
+}
+if (!is.null(rWX_all)) {
+  rWX_all_circ <- rWX_all
+  for (ROW in 1:dim(rWX_all_circ$w.ci.med)[1]){
+    if (rWX_all_circ$w.ci.med[ROW,7] == 0) {
+      rWX_all_circ$w.ci.med[ROW,6] = 0
+      rWX_all_circ$w.ci.med[ROW,8] = 0
+    }
+  }
+}
+
+#######################################################################
+### Do any additional filtering from cross correlation thresholding ###
+#######################################################################
+
+#get RFs to keep per cross correlation test
+r2k_cc = fflist[[rowToUse]] 
+
+for (DT in 1:length(RFs2keep)) {
+  
+  #only keep factors if they survived both the cross correlation test and the filtering for nonzero loadings above
+  dummy <- c()
+  for (F in 1:length(r2k_cc)) {
+    if (any(RFs2keep[[DT]] == r2k_cc[F])) {
+      dummy <- c(dummy,r2k_cc[F])
+    }
+  }
+  if (is.null(dummy)) { #if there are no robust factors to keep...
+    RFs2keep[[DT]] <- NA
+  } else {
+    RFs2keep[[DT]] <- dummy
+  }
+
+}
+
+#check sparse first
+rfs_sparse = unique(rWX_sparse$w.ci$Component) #get identities of existing sparse factors
+toRemove_cc2 = c()
+for (RF in rfs_sparse) { #for each sparse robust factor
+  if (!any(r2k_cc == RF)) { #if the current sparse factor is NOT one that we're supposed to keep
+    toRemove_cc2 = c(toRemove_cc2,RF) #add it to the list of factors to remove
+  }
+}
+
+if (!is.null(toRemove_cc2)) { #if there are further factors to remove...
+  
+  #get index to remove
+  removalInds <- c()
+  for (i in 1:length(toRemove_cc2)) {
+    removalInds <- c(removalInds,which(rfs_sparse == toRemove_cc2[i]))
+  }
+  
+  #Remove columns
+  rWX_sparse$ve_labels <- rWX_sparse$ve_labels[-removalInds]
+  rWX_sparse$w.med <- rWX_sparse$w.med[,-removalInds]
+  if (is.null(dim(rWX_sparse$x.rob))) { #if only one robust factor left... this will not be indexable like the other objects, so make it a matrix
+    rWX_sparse$x.rob <- as.matrix(rWX_sparse$x.rob)
+  }
+  rWX_sparse$x.rob <- rWX_sparse$x.rob[,-removalInds]
+  
+  rowsToRemove <- c()
+  rowsToRemove_med <- c()
+  for (RF in toRemove_cc2) {
+    rowsToRemove <- c(rowsToRemove,which(rWX_sparse$w.ci$Component == RF))
+    rowsToRemove_med <- c(rowsToRemove_med,which(rWX_sparse$w.ci.med$Component == RF))
+  }
+  rWX_sparse$w.ci = rWX_sparse$w.ci[-rowsToRemove,]
+  rWX_sparse$w.ci.med = rWX_sparse$w.ci.med[-rowsToRemove_med,]
+}
+
+#check all 
+rfs_all = unique(rWX_all$w.ci$Component)
+toRemove_cc2 = c()
+for (RF in rfs_all) { #for each non-sparse robust factor...
+  if (!any(r2k_cc == RF)) { #if the current sparse factor is NOT one that we're supposed to keep...
+    toRemove_cc2 = c(toRemove_cc2,RF) #add it to the list of factors to remove
+  }
+}
+if (!is.null(toRemove_cc2)) {
+  
+  #Remove columns
+  rWX_all$ve_labels <- rWX_all$ve_labels[-toRemove_cc2]
+  rWX_all$w.med <- rWX_all$w.med[,-toRemove_cc2]
+  rWX_all$x.rob <- rWX_all$x.rob[,-toRemove_cc2]
+  
+  rowsToRemove <- c()
+  rowsToRemove_med <- c()
+  for (RF in toRemove_cc2) {
+    rowsToRemove <- c(rowsToRemove,which(rWX_all$w.ci$Component == RF))
+    rowsToRemove_med <- c(rowsToRemove_med,which(rWX_all$w.ci.med$Component == RF))
+  }
+  rWX_all$w.ci = rWX_all$w.ci[-rowsToRemove,]
+  rWX_all$w.ci.med = rWX_all$w.ci.med[-rowsToRemove_med,]
+}
+
+#relabel GFs in ALL model so theyre consecutive (for clarity in plotting)
+for (GF in 1:length(rWX_all$ve_labels)) {
+  targStr <- rWX_all$ve_labels[GF]
+  PSI <- gregexpr(pattern =' ',targStr)
+  PSI = PSI[[1]] #percent sign index
+  strToReplace <- substr(targStr, PSI, nchar(targStr))#get substring to replace
+  replacement <- paste0(" ",GF)
+  
+  rWX_all$ve_labels[GF] <- str_replace(targStr, strToReplace, replacement)
+}
+
+#relabel GFs in sparse model so theyre consecutive (for clarity in plotting)
+if (ncol(rWX_sparse$w.med) > 0) {
+  for (GF in 1:length(rWX_sparse$ve_labels)) {
+    targStr <- rWX_sparse$ve_labels[GF]
+    PSI <- gregexpr(pattern =' ',targStr)
+    PSI = PSI[[1]] #percent sign index
+    strToReplace <- substr(targStr, PSI, nchar(targStr)) #get substring to replace
+    replacement <- paste0(" ",GF)
+    
+    rWX_sparse$ve_labels[GF] <- str_replace(targStr, strToReplace, replacement)
+  }
+} else {
+  rWX_sparse <- NULL
+}
+
+```
+    
+variance explained analysis / plot for "sparse" and "all" factor sets
+```{r plot VE, echo=FALSE, warning=FALSE}
+toRemove3 <- c();
+for (K in 1:dim(rWX_full$w.med)[2]) {
+  if (length(which(rWX_full$w.med.all[,K] == 0)) == dim(rWX_full$w.med.all)[1]) {
+    toRemove3 <- c(toRemove3,K)
+  }
+}
+rob_all <- NULL
+if (!is.null(toRemove3)) {
+  rob_all$indices <- rob.ind$indices[,-toRemove3]
+} else {
+  rob_all$indices <- rob.ind$indices
+}
+
+# Redefine blocks:
+dummy <- numeric();
+for (BLOCK in 1:length(blockNames)) {
+  dummy <- c(dummy,rep(blockNames[BLOCK],varsPerBlock[BLOCK]))
+}
+GFAblocks <- rep(dummy,ncol(rWX_full$w.med))
+
+w.summ <- rWX_all_circ$w.ci.med 
+names(w.summ)[names(w.summ)=="Block"] <- "GFAblocks"
+names(w.summ)[names(w.summ)=="Variable"] <- "GFAvarlabs"
+dummyLength <- length(w.summ$GFAblocks) #HACK
+w.summ$GFAblocks <- GFAblocks[1:dummyLength]
+
+### plot variance expained by block ###
+factorSets <- c('sparse','all')
+for (FS in 1:2) { #for each factor set (1=sparse, 2=all)...
+  
+  #plot VE across blocks
+  if (!is.na(RFs2keep[[FS]])) {
+    Krob = length(RFs2keep[[FS]])
+    vePlotData <- data.frame(matrix(NA, Krob, 3))
+    colnames(vePlotData) <- c('Component', 'Mean', 'SE')
+    vePlotData$Component <- RFs2keep[[FS]]
+    if (FS == 1) {
+      vePlotData$Mean <- ve_sparse[RFs2keep[[FS]]]
+      vePlotData$SE <- ve_sparse_SE[RFs2keep[[FS]]]
+    } else {
+      vePlotData$Mean <- ve_all[RFs2keep[[FS]]]
+      vePlotData$SE <- ve_all_SE[RFs2keep[[FS]]]
+    }
+    vePlotData <- vePlotData[order(-vePlotData$Mean), ] #sort from highest to lowest VE
+    p <- ggplot(vePlotData,
+                aes(x=1:Krob, y=Mean, ymin=Mean-SE, ymax=Mean+SE)) +
+      geom_pointrange() +
+      xlab('Robust components') + ylab('Percent variance explained') +
+      theme_bw() # use a white background
+    print(p + ggtitle(paste0(Krob, ' robust components (',factorSets[FS],') explain ',
+                             round(sum(vePlotData$Mean),1), '+/-', round(sum(vePlotData$SE), 1),
+                             '% variance of all variables')))
+    
+    #get factors to remove from the full set
+    toRemove = NULL;
+    for (F in 1:Krobust) {
+      if (!any(RFs2keep[[FS]] == F)) {
+        toRemove = c(toRemove,which(ve_full$ve.by.block.comp[,2] == F))
+      }
+    }
+    
+    #get plot data
+    if (is.null(toRemove)) {
+      plotData <- ve_full$ve.by.block.comp;
+    } else {
+      plotData <- ve_full$ve.by.block.comp[-toRemove,]
+    }
+    
+    #plot
+    p <- ggplot(plotData, 
+                aes(x=Component, y=Mean, ymin=Mean-SE, ymax=Mean+SE, color=Block)) +
+      geom_pointrange() +
+      facet_wrap(~ Block) +
+      xlab('Robust factors') + ylab('Variance explained (%)') +
+      ggtitle(paste0('% variance explained by ', factorSets[FS],' robust factors in each block'))
+    print(p)
+  }
+}
+
+```
+
+Plot GFA heatmaps
+```{r plot GFA heatmps, echo=FALSE, warning=FALSE}
+
+if (!is.null(rWX_sparse)) { #if we haven't set the whole sparse object to null above and we also haven't removed all robust factors above...
+  if (!dim(rWX_sparse$w.med)[2]==0) {
+    gfa_heatmap(robW=rWX_sparse, block.names=blockNames, varIdx.by.block=varNamesByBlock, conf.level=credLevel, heatmap.rep=FALSE, factor.order=NULL, varNames = varnames) #sparse heatmap
+  }
+}
+gfa_heatmap(robW=rWX_all, block.names=blockNames, varIdx.by.block=varNamesByBlock, conf.level=credLevel, heatmap.rep=FALSE, factor.order=NULL, varNames = varnames) #all heatmap
+```
+
+Plot circle graphs for ALL robust factors
+```{r plot GFA heatmps, echo=FALSE}
+for (f in RFs2keep[[2]]) {
+  print(Circbar(mydata=w.summ[w.summ$Component==f,], ebar=2, graphtitle=paste0('K',f), textlabel=2, minx=-.5, maxx=.5))
+}
+```
+
+Reformat some variables and save
+```{r reformat some variables and save, echo=FALSE, warning=FALSE}
+factorScores <- cbind(inputDataIDs,rWX_all$x.rob)
+if (!is.null(toRemove)){
+  factor_scores <- cbind(inputDataIDs,rWX_all$x.rob[,-toRemove])
+} else {
+  factor_scores <- factorScores;
+}
+colnames(factor_scores)[1] <- 'subID';
+names(factorScores[,1]) = 'subID';
+loadingWeights = rWX_all$w.med;
+
+for (K in 1:(dim(factor_scores)[2]-1)) {
+  colnames(factor_scores)[K + 1] = paste0('GF',K)
+}
+
+#save if applicable
+if (saveData) {
+  
+  #compile things to save into one object
+  outputData <- NULL
+  outputData$inputFileName <- inputFileName #data file name
+  outputData$rawData <- rawData #raw data
+  outputData$inputData <- inputData #GFA input data
+  outputData$inputDataIDs <- inputDataIDs #participant/sample/observation IDs
+  outputData$varnames <- varnames #variable names
+  outputData$varNamesByBlock <- varNamesByBlock  #variable IDs grouped by blokc
+  outputData$corM <- corM #spearman correlation matrix for GFA input data
+  outputData$corP <- corP #spearman correlation matrix p values for GFA input data
+  outputData$mccData <- mccData #matrix with information about group factors that are removed for intercorrelation
+  outputData$opt.par <- opt.par #optimal parameters for selecting selecting robust factors 
+  outputData$rWX_full <- rWX_full #GFA model before removing factors with all zero loadings
+  outputData$rWX_all <- rWX_all #GFA model including all robust factors who have at least one nonzero loading
+  outputData$rWX_sparse <- rWX_sparse #GFA model including only robust factors with 1 or more loadings whose credible intervals do not contain zero
+  outputData$ve_full <- ve_full #variance expliained for the "full" model
+  outputData$ve_all <- ve_all #variance expliained for the "all" model
+  outputData$ve_sparse <- ve_sparse #variance expliained for the "sparse" model
+  outputData$factor_scores <- factor_scores #factor scores for the "all" model
+  outputData$loading_weights <- loadingWeights #factor loading weights for the "all" model
+  
+  #make a file name
+  fileNum <- 1
+  outputFileName <- paste0('gfaOutput_',fileNum,'.RData') #start with 1
+  
+  #rename if necessary
+  if (file.exists(paste0(outputDir,outputFileName))) { #if there's already a 'gfaOutput_1.RData' file in the output folder...
+    
+    #try new file names until you find one that isn't already in the output folder
+    while (1) {
+      fileNum <- fileNum + 1 #add one to end of file name
+      outputFileName <- paste0('gfaOutput_',fileNum,'.RData') #new file name
+      if (!file.exists(paste0(outputDir,outputFileName))) { #if this name hasn't been used...
+        break #break out of while loop and save
+      }
+    }
+  }
+  save(outputData, file=paste0(outputDir,outputFileName)) #save data
+}
+```
