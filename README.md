@@ -35,6 +35,7 @@ To select an input data file, type the index of the data file. For example, to s
 
 1) dataSet.xlsx
 2) dataSet_v2.xlsx
+
 Enter desired file number from list above: 1
 
 The data file ‘gfa_example_fear_data.xlsx’, included in the ‘/GFA_peng_knotts_et_al/input_data/’ folder, contains the fear conditioning data used to generate Figure 2A in Peng et al., 2021.
